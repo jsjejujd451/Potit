@@ -1,0 +1,440 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no" />
+  <title>Интерактивный Желейный Живот</title>
+  <style>
+    html,body { height:100%; margin:0; background:#f0f0f0; overflow:hidden; }
+    #app { width:100vw; height:100vh; touch-action:none; }
+    canvas { display:block; }
+    #toggleMenu {
+      position: absolute;
+      left: 16px;
+      top: 16px;
+      background: rgba(255,255,255,0.95);
+      padding: 12px 16px;
+      border-radius: 50px;
+      box-shadow: 0 6px 20px rgba(0,0,0,0.15);
+      z-index: 20;
+      font-family: system-ui,Segoe UI,Roboto,Arial;
+      font-size: 16px;
+      font-weight: 600;
+      user-select: none;
+      cursor: pointer;
+    }
+    .ui-panel {
+      position: absolute;
+      left: 10px;
+      top: 70px;
+      background: rgba(255,255,255,0.95);
+      padding: 16px;
+      border-radius: 16px;
+      box-shadow: 0 8px 30px rgba(0,0,0,0.18);
+      z-index: 15;
+      font-family: system-ui,Segoe UI,Roboto,Arial;
+      max-width: 320px;
+      user-select: none;
+      transition: transform 0.3s ease, opacity 0.3s ease;
+    }
+    @media (max-width: 767px) {
+      .ui-panel {
+        transform: translateX(-110%);
+        opacity: 0;
+        pointer-events: none;
+      }
+      .ui-panel.visible {
+        transform: translateX(0);
+        opacity: 1;
+        pointer-events: all;
+      }
+    }
+    .ui-panel label { display:block; margin:10px 0 6px; font-size:15px; }
+    .ui-panel input[type=range] { width:100%; }
+    .ui-panel .value { float:right; font-weight:600; }
+    .hint {
+      position: absolute;
+      left:10px; bottom:20px;
+      background:rgba(255,255,255,0.92);
+      padding:10px 18px;
+      border-radius:12px;
+      box-shadow:0 4px 16px rgba(0,0,0,0.12);
+      z-index:5;
+      font-family: system-ui;
+      font-size:14px;
+    }
+    .zoom-btn {
+      position:absolute; right:20px; bottom:80px;
+      background:rgba(255,255,255,0.95); width:56px; height:56px;
+      border-radius:50%; display:flex; align-items:center; justify-content:center;
+      font-size:32px; box-shadow:0 6px 20px rgba(0,0,0,0.2); z-index:10;
+      user-select:none; cursor:pointer;
+    }
+    .zoom-out { bottom:20px; }
+  </style>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+</head>
+<body>
+  <div id="app"></div>
+  <div id="toggleMenu">Настройки ⚙️</div>
+  <div class="ui-panel" id="uiPanel">
+    <label>Загрузить своё фото</label>
+    <input type="file" id="imageLoader" accept="image/*">
+    <small>Для контура по телу используй PNG с прозрачным фоном</small>
+
+    <label>Звук глажения <input type="checkbox" id="soundToggle" checked> Включено</label>
+    <small>Можно выключить по желанию</small>
+
+    <label>Загрузить свой звук глажения</label>
+    <input type="file" id="squishLoader" accept="audio/*">
+    <small>MP3/OGG/WAV. Влажный, мясной, жирный — идеально</small>
+
+    <label>Чувствительность <span class="value" id="sensVal">0.50</span></label>
+    <input type="range" id="sensitivity" min="0.1" max="1.5" step="0.05" value="0.50">
+    <label>Радиус воздействия <span class="value" id="radiusVal">140</span></label>
+    <input type="range" id="radius" min="50" max="300" step="10" value="140">
+    <label>Жёсткость пружины <span class="value" id="stiffVal">0.014</span></label>
+    <input type="range" id="stiffness" min="0.005" max="0.05" step="0.001" value="0.014">
+    <label>Z-сила (объём) <span class="value" id="zforceVal">0.35</span></label>
+    <input type="range" id="zforce" min="0" max="1" step="0.05" value="0.35">
+    <label>Сегменты сетки <span class="value" id="segmentsVal">40</span></label>
+    <input type="range" id="segments" min="20" max="60" step="5" value="40">
+    <small>Больше = плавнее, но тяжелее. Применяется кнопкой.</small>
+    <button id="applySegments" style="margin-top:10px; padding:10px; width:100%;">Применить сегменты</button>
+  </div>
+  <div class="hint">Гладьте живот пальцем или мышью<br>На мобильных: ⚙️ → настройки</div>
+  <div class="zoom-btn" id="zoomIn">+</div>
+  <div class="zoom-btn zoom-out" id="zoomOut">-</div>
+
+<script>
+// Параметры
+let FORCE_MULT = 0.50;
+let INFLUENCE_RADIUS = 140;
+let STIFFNESS_BASE = 0.014;
+let Z_FORCE_MULT = 0.35;
+let GRID_SEGMENTS = 40;
+const BELLY_SIZE = 700;
+
+const container = document.getElementById('app');
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0xf0f0f0);
+
+let width = container.clientWidth;
+let height = container.clientHeight;
+
+const camera = new THREE.PerspectiveCamera(75, width / height, 0.1, 2000);
+camera.position.set(0, 0, 800);
+camera.lookAt(0, 0, 0);
+
+const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+renderer.setPixelRatio(window.devicePixelRatio);
+renderer.setSize(width, height);
+container.appendChild(renderer.domElement);
+
+let geometry;
+let bellyMesh;
+let posAttr;
+let vertexCount;
+let originals;
+let velocities;
+
+const material = new THREE.MeshBasicMaterial({
+  transparent: true,
+  side: THREE.DoubleSide
+});
+
+function createMesh() {
+  if (bellyMesh) scene.remove(bellyMesh);
+  geometry = new THREE.PlaneBufferGeometry(BELLY_SIZE, BELLY_SIZE, GRID_SEGMENTS, GRID_SEGMENTS);
+  bellyMesh = new THREE.Mesh(geometry, material);
+  scene.add(bellyMesh);
+  posAttr = geometry.attributes.position;
+  vertexCount = posAttr.count;
+  originals = new Float32Array(posAttr.array.length);
+  originals.set(posAttr.array);
+  velocities = new Float32Array(posAttr.array.length);
+  velocities.fill(0);
+}
+createMesh();
+
+// Альфа-канал
+let pixelData = null;
+let texWidth = 0;
+let texHeight = 0;
+
+function setTextureFromImage(img) {
+  if (!img) return;
+  const canvas = document.createElement('canvas');
+  canvas.width = img.width;
+  canvas.height = img.height;
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+  ctx.drawImage(img, 0, 0);
+  const newTex = new THREE.CanvasTexture(canvas);
+  newTex.minFilter = THREE.LinearFilter;
+  material.map = newTex;
+  material.needsUpdate = true;
+
+  try {
+    const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    pixelData = imageData.data;
+    texWidth = canvas.width;
+    texHeight = canvas.height;
+  } catch (e) {
+    pixelData = null;
+  }
+}
+
+const loader = new THREE.TextureLoader();
+loader.load('belly.png', (tex) => {
+  setTextureFromImage(tex.image);
+  renderer.render(scene, camera);
+});
+
+/* Звук глажения — влажный мясной squelch */
+const squishSound = new Audio('https://orangefreesounds.com/wp-content/uploads/2023/08/Squelch-sound-effect.mp3');
+squishSound.volume = 0.25; // Тихо
+squishSound.preload = 'auto';
+
+let soundEnabled = true;
+let lastSquishTime = 0;
+
+/* UI */
+const toggleBtn = document.getElementById('toggleMenu');
+const uiPanel = document.getElementById('uiPanel');
+toggleBtn.addEventListener('click', () => {
+  uiPanel.classList.toggle('visible');
+  toggleBtn.textContent = uiPanel.classList.contains('visible') ? '✕ Закрыть' : 'Настройки ⚙️';
+});
+
+// Переключатель звука
+document.getElementById('soundToggle').addEventListener('change', (e) => {
+  soundEnabled = e.target.checked;
+});
+
+document.getElementById('imageLoader').addEventListener('change', (e) => {
+  const file = e.target.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = (ev) => {
+    const img = new Image();
+    img.onload = () => setTextureFromImage(img);
+    img.src = ev.target.result;
+  };
+  reader.readAsDataURL(file);
+});
+
+// Загрузка своего звука
+document.getElementById('squishLoader').addEventListener('change', (e) => {
+  const file = e.target.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = (ev) => {
+    squishSound.src = ev.target.result;
+    squishSound.load();
+  };
+  reader.readAsDataURL(file);
+});
+
+document.getElementById('sensitivity').addEventListener('input', (e) => {
+  FORCE_MULT = parseFloat(e.target.value);
+  document.getElementById('sensVal').textContent = FORCE_MULT.toFixed(2);
+});
+
+document.getElementById('radius').addEventListener('input', (e) => {
+  INFLUENCE_RADIUS = parseInt(e.target.value);
+  document.getElementById('radiusVal').textContent = INFLUENCE_RADIUS;
+});
+
+document.getElementById('stiffness').addEventListener('input', (e) => {
+  STIFFNESS_BASE = parseFloat(e.target.value);
+  document.getElementById('stiffVal').textContent = STIFFNESS_BASE.toFixed(3);
+});
+
+document.getElementById('zforce').addEventListener('input', (e) => {
+  Z_FORCE_MULT = parseFloat(e.target.value);
+  document.getElementById('zforceVal').textContent = Z_FORCE_MULT.toFixed(2);
+});
+
+document.getElementById('segments').addEventListener('input', (e) => {
+  document.getElementById('segmentsVal').textContent = e.target.value;
+});
+
+document.getElementById('applySegments').addEventListener('click', () => {
+  const newSeg = parseInt(document.getElementById('segments').value);
+  if (newSeg !== GRID_SEGMENTS) {
+    GRID_SEGMENTS = newSeg;
+    createMesh();
+    uiPanel.classList.remove('visible');
+    toggleBtn.textContent = 'Настройки ⚙️';
+  }
+});
+
+/* Зум */
+const zoomStep = 100;
+['click', 'touchstart'].forEach(ev => {
+  document.getElementById('zoomIn').addEventListener(ev, (e) => { e.preventDefault(); camera.position.z = Math.max(300, camera.position.z - zoomStep); });
+  document.getElementById('zoomOut').addEventListener(ev, (e) => { e.preventDefault(); camera.position.z = Math.min(2000, camera.position.z + zoomStep); });
+});
+
+renderer.domElement.addEventListener('wheel', (e) => {
+  e.preventDefault();
+  camera.position.z += e.deltaY * 0.5;
+  camera.position.z = Math.max(300, Math.min(2000, camera.position.z));
+});
+
+/* Input */
+let pointerDown = false;
+let lastPointerWorld = { x: 0, y: 0, z: 0 };
+let pointerWorld = { x: 0, y: 0, z: 0 };
+let movedSinceDown = false;
+const raycaster = new THREE.Raycaster();
+const pointerVec = new THREE.Vector2();
+let pointerNDC = { x: 0, y: 0 };
+
+function updatePointerWorld() {
+  pointerVec.set(pointerNDC.x, pointerNDC.y);
+  raycaster.setFromCamera(pointerVec, camera);
+  const intersects = raycaster.intersectObject(bellyMesh);
+  if (intersects.length > 0) {
+    const intersect = intersects[0];
+    const p = intersect.point;
+    let valid = true;
+    if (pixelData) {
+      const uv = intersect.uv;
+      const px = Math.floor(uv.x * texWidth);
+      const py = Math.floor((1 - uv.y) * texHeight);
+      if (px >= 0 && px < texWidth && py >= 0 && py < texHeight) {
+        const alpha = pixelData[(py * texWidth + px) * 4 + 3];
+        if (alpha < 50) valid = false;
+      } else {
+        valid = false;
+      }
+    }
+    if (valid) {
+      pointerWorld.x = p.x;
+      pointerWorld.y = p.y;
+      pointerWorld.z = p.z;
+    }
+  }
+}
+
+function onPointerMove(e) {
+  const clientX = e.clientX || (e.touches?.[0]?.clientX);
+  const clientY = e.clientY || (e.touches?.[0]?.clientY);
+  if (clientX === undefined) return;
+  const rect = renderer.domElement.getBoundingClientRect();
+  pointerNDC.x = ((clientX - rect.left) / rect.width) * 2 - 1;
+  pointerNDC.y = -((clientY - rect.top) / rect.height) * 2 + 1;
+  updatePointerWorld();
+  movedSinceDown = true;
+}
+
+function onPointerDown(e) {
+  pointerDown = true;
+  movedSinceDown = false;
+  onPointerMove(e);
+  lastPointerWorld.x = pointerWorld.x;
+  lastPointerWorld.y = pointerWorld.y;
+  lastPointerWorld.z = pointerWorld.z;
+}
+
+function onPointerUp() { pointerDown = false; }
+
+renderer.domElement.style.touchAction = 'none';
+renderer.domElement.addEventListener('pointermove', onPointerMove, { passive: true });
+renderer.domElement.addEventListener('pointerdown', onPointerDown);
+window.addEventListener('pointerup', onPointerUp);
+
+/* Анимация */
+let lastTime = performance.now();
+
+function animate(now) {
+  requestAnimationFrame(animate);
+  const dt = Math.min((now - lastTime) / 16.6667, 4);
+  lastTime = now;
+
+  const dx = pointerWorld.x - lastPointerWorld.x;
+  const dy = pointerWorld.y - lastPointerWorld.y;
+  const speed = Math.hypot(dx, dy);
+  const dz = speed * 0.12;
+
+  lastPointerWorld.x = pointerWorld.x;
+  lastPointerWorld.y = pointerWorld.y;
+
+  if (pointerDown && movedSinceDown) {
+    for (let i = 0; i < vertexCount; i++) {
+      const ix = i * 3;
+      const vx = posAttr.array[ix];
+      const vy = posAttr.array[ix + 1];
+      const dist = Math.hypot(vx - pointerWorld.x, vy - pointerWorld.y);
+      if (dist < INFLUENCE_RADIUS) {
+        const influence = (1 - dist / INFLUENCE_RADIUS) ** 2;
+        const zone = (originals[ix] + BELLY_SIZE / 2) / BELLY_SIZE;
+        let fX = dx * FORCE_MULT * influence;
+        let fY = dy * FORCE_MULT * influence;
+        let fZ = -dz * Z_FORCE_MULT * influence;
+        if (zone < 0.33 || zone > 0.67) {
+          fX *= zone < 0.33 ? (fX > 0 ? 0.3 : 1.8) : (fX < 0 ? 0.3 : 1.8);
+          fY *= 1.2;
+        } else {
+          fX *= 2.1; fY *= 1.7; fZ *= 1.6;
+        }
+        velocities[ix] += fX;
+        velocities[ix + 1] += fY;
+        velocities[ix + 2] += fZ;
+      }
+    }
+
+    // Звук при глажении (если включён)
+    if (soundEnabled && speed > 8 && (now - lastSquishTime) > 100) {
+      squishSound.currentTime = 0;
+      squishSound.play().catch(() => {});
+      lastSquishTime = now;
+    }
+  }
+
+  let totalVel = 0;
+  for (let i = 0; i < vertexCount; i++) {
+    const ix = i * 3;
+    let x = posAttr.array[ix], y = posAttr.array[ix + 1], z = posAttr.array[ix + 2];
+    const ox = originals[ix], oy = originals[ix + 1], oz = originals[ix + 2];
+    let vx = velocities[ix], vy = velocities[ix + 1], vz = velocities[ix + 2];
+    const zone = (ox + BELLY_SIZE / 2) / BELLY_SIZE;
+    let stiff = STIFFNESS_BASE;
+    if (zone >= 0.33 && zone <= 0.67) stiff *= 0.4;
+    vx += (ox - x) * stiff * dt;
+    vy += (oy - y) * stiff * dt;
+    vz += (oz - z) * stiff * dt * 1.6;
+    vx *= Math.pow(0.945, dt);
+    vy *= Math.pow(0.945, dt);
+    vz *= Math.pow(0.945, dt);
+    x += vx * dt; y += vy * dt; z += vz * dt;
+    posAttr.array[ix] = x; posAttr.array[ix + 1] = y; posAttr.array[ix + 2] = z;
+    velocities[ix] = vx; velocities[ix + 1] = vy; velocities[ix + 2] = vz;
+    totalVel += Math.abs(vx) + Math.abs(vy) + Math.abs(vz);
+  }
+  posAttr.needsUpdate = true;
+
+  renderer.render(scene, camera);
+}
+requestAnimationFrame(animate);
+
+/* Resize */
+function onResize() {
+  width = container.clientWidth;
+  height = container.clientHeight;
+  camera.aspect = width / height;
+  camera.updateProjectionMatrix();
+  renderer.setSize(width, height);
+  const fovRad = camera.fov * Math.PI / 180;
+  const requiredZ = Math.max(
+    (BELLY_SIZE / 2) / Math.tan(fovRad / 2),
+    (BELLY_SIZE * camera.aspect / 2) / Math.tan(fovRad / 2)
+  );
+  camera.position.z = requiredZ * 1.2;
+}
+window.addEventListener('resize', onResize);
+onResize();
+</script>
+</body>
+</html>
